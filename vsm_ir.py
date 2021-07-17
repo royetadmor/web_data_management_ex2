@@ -4,7 +4,6 @@ import inverted_index_builder
 import search_engine
 
 
-
 """
 Implementation of command line interface in the requested format.
 Can accept one of the two command formats:
@@ -17,35 +16,26 @@ Any other format will print an error message and exit.
 
 def main():
     args = sys.argv[1:]
-    if(len(args) == 2):
+    if len(args) == 2:
         command = args[0]
         path_to_file = args[1]
         if command == "create_index" and path.exists(path_to_file):
             inverted_index_builder.build_inverted_index(path_to_file)
         else:
-            print("No such command or path to file is wrong.\nExiting.")
+            print("No such command or path to file is wrong.\nAborting..")
             exit(1)
-    elif(len(args) == 3):
+    elif len(args) == 3:
         command = args[0]
         path_to_file = args[1]
         question = args[2]
-        if(command == "query" and path.exists(path_to_file)):
-            search_engine.query(path_to_file,question)
+        if command == "query" and path.exists(path_to_file):
+            search_engine.retrieve_documents(path_to_file, question)
         else:
-            print("No such command or path to file is wrong.\nExiting.")
+            print("No such command or path to file is wrong.\nAborting..")
             exit(1)
     else:
-        print("No such command.\nExiting")
+        print("No such command.\nAborting..")
         exit(1)
-
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":

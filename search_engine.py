@@ -1,60 +1,124 @@
 import json
 import numpy as np
+from nltk import PorterStemmer
+from sklearn.feature_extraction.text import CountVectorizer
 
 """
 Given a path and a question:
-    1. Loads invereted index from disk
-    2. Extracts all relevant documents. That is, documents containing at least one word from the question
-    3. Extracts a list of records_nums of relevant documents
-    4. Builds the matrix as showen in lecture. the i,j cell is the tf-idf score of word j in document i.
-    For easier use, it's kept in a dictionary.
-    5. Calculates the query vector. each word gets a tf-idf score, based on:
-        5.1 Non-normalized term frequency with respect to the query
-        5.2 IDF score, as showen in lectures
-    6. Calculates the cosine similarity for each document
-    7. Sorts the result and keeps only the documents that the similarity is greater than 0.5
-    8. Why 0.5 you ask? no clue, it's just what looks best when comparing to the actual results. 
+    1. Loads inverted index from disk
+    2. Creates inverted index for query
+    3. For each token:
+        * Extracts a list of token_occurrences ((doc number, doc norm), weight)
+        * Calculate CosSim (not normalized) of query and document
+    4. Normalizes CosSim
+    5. Sort retrieved documents by similarity score
+    6. Saves (rel_res_percentage)% documents with score higher than score_threshold
 """
 
 
-def query(path, question):
-    res = []
+def retrieve_documents(path, question):
     inverted_index = load_inverted_index(path)
-    relevant_index, relevant_words = get_all_relevant_documents(question, inverted_index)
-    relevant_record_num = get_record_nums(relevant_index)
-    record_dict = get_document_matrix(relevant_index, relevant_words, relevant_record_num)
-    query_vector = calculate_query_vector(inverted_index, relevant_words)
-    for record in record_dict:
-        similarity = calculate_similarity(query_vector, record_dict[record])
-        res.append((record, similarity))
-    res = (sorted(res, key=lambda tup: tup[1], reverse=True))
+    query_hashmap = create_query_inverted_index(question, inverted_index)
+    query = {}
+    docs_x_scores = {}
+    docs_x_length = {}
+
+    for token in query_hashmap:
+        idf = calc_idf(token, inverted_index)
+        tf = calc_tf(token, query_hashmap)
+        token_tf_idf = tf * idf
+        query[token] = token_tf_idf
+        token_occurrences = inverted_index[token]
+        for occurrence in token_occurrences:
+            doc = occurrence[0][0]
+            docs_x_length[doc] = occurrence[0][1]
+            doc_tf_idf = occurrence[1]
+            if doc not in docs_x_scores:
+                docs_x_scores[doc] = 0
+            docs_x_scores[doc] += token_tf_idf * doc_tf_idf
+
+    for doc in docs_x_scores:
+        doc_length = docs_x_length[doc]
+        query_length = get_norm(query)
+        docs_x_scores[doc] = docs_x_scores[doc] / (doc_length * query_length)
+
+    res = sorted(docs_x_scores.items(), key=lambda item: item[1], reverse=True)
     relevant_res = []
-    for data in res:
-        if (data[1] > 0.5):
-            relevant_res.append(data[0])
-    print(relevant_res)
+    score_threshold = 0.45
+    rel_res_percentage = 0.8
+    while len(relevant_res) == 0:
+        for data in res:
+            if data[1] > score_threshold:
+                relevant_res.append(data[0])
+
+        relevant_res = [r for r in relevant_res[:int(len(relevant_res) * rel_res_percentage)]]
+        score_threshold -= 0.05
+        rel_res_percentage -= 0.11
+
+    with open('ranked_query_docs.txt', 'w') as f:
+        for doc in relevant_res:
+            f.write(doc + '\n')
     return relevant_res
 
 
 """
-Given a question and the inverted index, returns:
-    1. A dictionary containing:
-        1.1 Key: words in the question
-        1.2 Value: their tf-idf score
-    2. A list of words that are both in the index and in the question
+Creates inverted index for query.
 """
 
 
-def get_all_relevant_documents(question, inverted_index):
-    res = {}
-    relevant_words = []
-    words = question.split(' ')
-    for word in words:
-        word = word.strip('?').lower()
-        if (word in inverted_index):
-            relevant_words.append(word)
-            res[word] = inverted_index[word]
-    return res, relevant_words
+def create_query_inverted_index(question, inverted_index):
+    query = {}
+    ps = PorterStemmer()
+    analyzer = CountVectorizer(stop_words="english").build_analyzer()
+
+    def stemmed_words(doc):
+        return (ps.stem(w) for w in analyzer(doc))
+
+    cv = CountVectorizer(analyzer=stemmed_words)
+    cv.fit_transform([question[:-1]])
+    vocabulary = cv.get_feature_names()
+    for word in vocabulary:
+        if word in inverted_index:
+            if word not in query:
+                query[word] = 0
+            query[word] += 1
+
+    return query
+
+
+"""
+Calculates idf for token.
+"""
+
+
+def calc_idf(token, inverted_index):
+    token_docs_length = len(inverted_index[token])
+    amount_of_records = get_amount_of_records(inverted_index)
+    return np.log2(amount_of_records / token_docs_length)
+
+
+"""
+Calculates tf for token in query.
+"""
+
+
+def calc_tf(token, query):
+    m = query[max(query)]
+    return query[token] / m
+
+
+"""
+Calculates query length (norm).
+"""
+
+
+def get_norm(query):
+    norm = 0
+    for token in query:
+        norm += query[token] * query[token]
+    norm = np.sqrt(norm)
+
+    return norm
 
 
 """
@@ -69,38 +133,6 @@ def load_inverted_index(path):
 
 
 """
-Extracts and returns all record_nums from the inverted index
-"""
-
-
-def get_record_nums(inverted_index):
-    relevant_records = []
-    for word in inverted_index:
-        for data in inverted_index[word]:
-            relevant_records.append(data[0])
-    return relevant_records
-
-
-"""
-Given the relevant part of the inverted index, the relevant words and the record_nums, returns:
-    1. A dictionary containing:
-        1.1 Key: Record num
-        1.2 Value: vector of len(relevant_words) entries. Each entry is the tf-idf score of the j'th word.
-"""
-
-
-def get_document_matrix(relevant_index, relevant_words, relevant_record_num):
-    record_dict = {}
-    for record_num in relevant_record_num:
-        record_dict[record_num] = [0] * len(relevant_words)
-    for i in range(len(relevant_words)):
-        for docs in relevant_index[relevant_words[i]]:
-            record_dict[docs[0]][i] = docs[1]
-
-    return record_dict
-
-
-"""
 Returns the amount of distinct words in the inverted index
 """
 
@@ -109,36 +141,6 @@ def get_amount_of_records(inverted_index):
     res = set()
     for word in inverted_index:
         for data in inverted_index[word]:
-            res.add(data[0])
+            res.add(data[0][0])
     return len(res)
 
-
-"""
-Calculates the query vector.
-For each word, calculate it's tf-idf score and appends it to the vector.
-TODO: I assumed the term frequency will be 1, but it's not always true. 
-We should calculate the term frequency for each term.
-"""
-
-
-def calculate_query_vector(inverted_index, relevant_words):
-    query_vector = []
-    amount_of_records = get_amount_of_records(inverted_index)
-    for word in relevant_words:
-        relevant_docs_amount = len(inverted_index[word])
-        score = np.log(amount_of_records / relevant_docs_amount)
-        query_vector.append(score)
-    return query_vector
-
-
-"""
-Returns the cosine similarity between the query vector and a given vector.
-"""
-
-
-def calculate_similarity(query_vector, record_vector):
-    return np.dot(query_vector, record_vector) / (np.linalg.norm(query_vector) * np.linalg.norm(record_vector))
-
-
-query("vsm_inverted_index.json",
-      "How are salivary glycoproteins from CF patients different from those of normal subjects?")
